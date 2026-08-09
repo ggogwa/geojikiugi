@@ -11,8 +11,25 @@
 [Bb]uild/
 [Bb]uilds/
 [Bb]uilds_*/
+VideoBuild/
+VideoBuildProject/
 *.zip
 *.7z
+!LatestBuild/
+!LatestBuild/**
+!BeggarEstateDefense_Latest.zip
+
+# Local gameplay capture artifacts
+gameplay_take*.mp4
+record_test.mp4
+take*_contact.jpg
+take*_ffmpeg.log
+unity_*.png
+unity_*.jpg
+desktop_capture.png
+video_save_backup.reg
+VideoBuild*.log
+kor.traineddata
 
 # IDE-generated files
 .vs/
@@ -40,4 +57,3 @@ Thumbs.db
 
 # Unity crash reports
 sysinfo.txt
-

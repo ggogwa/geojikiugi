@@ -12,7 +12,9 @@ namespace BeggarEstateDefense
         public int clearedStage;
         
         public int fishDeaths;
-public int fishLevel;
+        public int fishLevel;
+        public int fishDeathCollection;
+        public int currentLocation;
         public int[] estates;
         public HeroData[] party;
 
@@ -37,6 +39,8 @@ public GameProgress Load(BalanceConfig balance, int estateCount)
                 highestStage = Mathf.Clamp(PlayerPrefs.GetInt(Prefix + "Stage", 1), 1, GameData.MaxBattleStage),
                 fishDeaths = Mathf.Max(0, PlayerPrefs.GetInt(Prefix + "FishDeaths", 0)),
                 fishLevel = Mathf.Clamp(PlayerPrefs.GetInt(Prefix + "Fish", 0), 0, 10),
+                fishDeathCollection = Mathf.Max(0, PlayerPrefs.GetInt(Prefix + "FishDeathCollection", 0)),
+                currentLocation = Mathf.Clamp(PlayerPrefs.GetInt(Prefix + "CurrentLocation", 0), 0, 2),
                 estates = new int[estateCount],
                 party = new HeroData[3]
             };
@@ -70,6 +74,8 @@ public void Save(GameProgress progress)
             PlayerPrefs.SetInt(Prefix + "ClearedStage", progress.clearedStage);
             PlayerPrefs.SetInt(Prefix + "FishDeaths", progress.fishDeaths);
             PlayerPrefs.SetInt(Prefix + "Fish", progress.fishLevel);
+            PlayerPrefs.SetInt(Prefix + "FishDeathCollection", progress.fishDeathCollection);
+            PlayerPrefs.SetInt(Prefix + "CurrentLocation", progress.currentLocation);
             for (int i = 0; i < progress.estates.Length; i++)
                 PlayerPrefs.SetInt(Prefix + "Estate_" + i, progress.estates[i]);
 
@@ -91,6 +97,8 @@ public void Clear(int estateCount)
             PlayerPrefs.DeleteKey(Prefix + "ClearedStage");
             PlayerPrefs.DeleteKey(Prefix + "FishDeaths");
             PlayerPrefs.DeleteKey(Prefix + "Fish");
+            PlayerPrefs.DeleteKey(Prefix + "FishDeathCollection");
+            PlayerPrefs.DeleteKey(Prefix + "CurrentLocation");
             for (int i = 0; i < estateCount; i++) PlayerPrefs.DeleteKey(Prefix + "Estate_" + i);
             for (int i = 0; i < 3; i++) PlayerPrefs.DeleteKey(Prefix + "Hero_" + i);
         }

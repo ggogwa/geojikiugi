@@ -34,6 +34,15 @@ namespace BeggarEstateDefense
         public static double TotalEarned = BalanceDatabase.Current.startingTotalEarned;
         public static int FishLevel;
         public static int FishDeaths;
+        public static int FishDeathCollection;
+        public static int CurrentLocation;
+        public static readonly string[] LocationNames = { "주택가", "상업 지구", "역세권" };
+        public static readonly float[] LocationIncomeMultipliers = { .9f, 1.15f, 1.35f };
+        public static readonly string[] FishDeathCauses =
+        {
+            "찬물에 놀라서 심장마비", "비닐봉지를 해파리로 착각", "거울 속 자신과 눈싸움",
+            "너무 밝은 햇빛에 기절", "강화 망치 소리에 쇼크", "주인의 기대가 너무 무거움"
+        };
 
         public static readonly int[] Estates = new int[6];
         public static string[] EstateNames { get { return BalanceDatabase.Current.estateNames; } }
@@ -53,7 +62,7 @@ namespace BeggarEstateDefense
             {
                 double value = 0;
                 for (int i = 0; i < Estates.Length; i++) value += Estates[i] * EstateIncome[i];
-                return value * PassiveIncomeMultiplier;
+                return value * PassiveIncomeMultiplier * LocationIncomeMultipliers[Mathf.Clamp(CurrentLocation, 0, LocationIncomeMultipliers.Length - 1)];
             }
         }
 
@@ -101,12 +110,31 @@ public static float FishFailureRate(int level)
 
         public static double FishSaleValue(int level)
         {
-            return Math.Round(FishSaleValues[level] * FishEconomyScale * (ClearedStage >= 13 ? 1.2d : 1d));
+            int startLevel = FishStartLevel;
+            double value = FishPurchaseCost;
+            float[] growth = { .10f, .20f, .20f, .30f, .30f, .40f, .40f, .50f, .50f };
+            for (int nextLevel = startLevel + 1; nextLevel <= level; nextLevel++)
+                value *= 1d + growth[Mathf.Clamp(nextLevel - 2, 0, growth.Length - 1)];
+            return Math.Round(value);
         }
 
         public static int FishUpgradeCost(int level)
         {
-            return Mathf.Max(1, (int)Math.Round(FishUpgradeCosts[level] * FishEconomyScale));
+            int configuredCost = Mathf.Max(1, (int)Math.Round(FishUpgradeCosts[level] * FishEconomyScale));
+            int valueGain = Mathf.Max(1, (int)(FishSaleValue(level + 1) - FishSaleValue(level)));
+            return Mathf.Min(configuredCost, valueGain);
+        }
+
+        public static double FishPurchaseCost
+        {
+            get { return Math.Round(BalanceDatabase.Current.fishPurchaseCost * FishEconomyScale * (1d - FishPurchaseDiscount)); }
+        }
+
+        public static string RegisterFishDeathCause()
+        {
+            int index = UnityEngine.Random.Range(0, FishDeathCauses.Length);
+            FishDeathCollection |= 1 << index;
+            return FishDeathCauses[index];
         }
 
         public static int EstatePurchaseLimit(int index)
@@ -154,6 +182,8 @@ public static void Save()
                 clearedStage = ClearedStage,
                 fishLevel = FishLevel,
                 fishDeaths = FishDeaths,
+                fishDeathCollection = FishDeathCollection,
+                currentLocation = CurrentLocation,
                 estates = (int[])Estates.Clone(),
                 party = savedParty
             });
@@ -168,6 +198,8 @@ public static void Load()
             ClearedStage = Mathf.Clamp(progress.clearedStage, 0, MaxBattleStage);
             FishLevel = progress.fishLevel;
             FishDeaths = Mathf.Max(0, progress.fishDeaths);
+            FishDeathCollection = Mathf.Max(0, progress.fishDeathCollection);
+            CurrentLocation = Mathf.Clamp(progress.currentLocation, 0, LocationNames.Length - 1);
             Array.Copy(progress.estates, Estates, Estates.Length);
 
             Array.Clear(Party, 0, Party.Length);
@@ -190,6 +222,8 @@ public static void ResetData()
             TotalEarned = BalanceDatabase.Current.startingTotalEarned;
             FishLevel = 0;
             FishDeaths = 0;
+            FishDeathCollection = 0;
+            CurrentLocation = 0;
             HighestStage = 1;
             ClearedStage = 0;
             Array.Clear(Estates, 0, Estates.Length);
@@ -213,14 +247,14 @@ static Sprite circleSprite;
         static readonly Color32 Mint = new Color32(83, 205, 166, 255);
         static readonly Color32 Coral = new Color32(241, 101, 94, 255);
         static readonly Color32 Blue = new Color32(75, 139, 221, 255);
-        Text moneyText, incomeText, clickText, fishText, fishRiskText, fishActionText, estateSummary, noticeText;
+        Text moneyText, incomeText, clickText, fishText, fishRiskText, fishActionText, estateSummary, estateDetailText, noticeText;
         Text estateHudText, fishHudText, stageHudText;
         GameObject streetPanel, streetZoneBadge, streetClickHint, fishHomePanel, estateHomePanel, fishRiskBar;
         readonly Text[] estateTexts = new Text[6];
         readonly Text[] estateBuyTexts = new Text[6];
         readonly Button[] estateButtons = new Button[6];
         readonly CanvasGroup[] estateCardGroups = new CanvasGroup[6];
-        Button fishActionButton, fishSellButton, homeNavButton, fishNavButton, estateNavButton;
+        Button fishActionButton, fishSellButton, estateDetailButton, homeNavButton, fishNavButton, estateNavButton;
         Image fishImage, streetFishImage, estateMapImage, beggarImage, homeBackgroundImage, outfitIconImage, outfitProgressFill, fishRiskFill;
         Text outfitProgressText;
         float resetConfirmUntil;
@@ -232,6 +266,9 @@ static Sprite circleSprite;
         Sprite[] reactionSprites;
         readonly CoinPopEffect[] coinEffects = new CoinPopEffect[8];
         int nextCoinEffect;
+        float nextExtortionAt;
+        bool extortionPlaying;
+        int selectedEstate;
 
         static readonly string[] BegLines = { "감사합니다! 오늘도 버텨볼게요!", "우와, 진짜 동전이다!", "한 푼이 건물 한 채가 되는 날까지!", "이 은혜 잊지 않을게요!", "좋았어, 부자까지 한 걸음!" };
         static readonly Dictionary<string, Sprite> SpriteCache = new Dictionary<string, Sprite>();
@@ -289,6 +326,8 @@ static Sprite circleSprite;
                 RefreshMoneyOnly();
             }
             if (reactionUntil > 0 && Time.unscaledTime >= reactionUntil) { reactionUntil = 0; RefreshBeggarSprite(); }
+            if (!extortionPlaying && Time.unscaledTime >= nextExtortionAt && GameData.Money >= 100)
+                StartCoroutine(PlayExtortion());
         }
 
         void OnApplicationPause(bool pause) { if (pause) GameData.Save(); }
@@ -381,6 +420,7 @@ static Sprite circleSprite;
 
         void BuildHomeV2()
         {
+            nextExtortionAt = Time.unscaledTime + 25f;
             var canvas = MakeCanvas("거지 키우기 모바일 UI");
             Box(canvas.transform, "배경", new Color32(207, 196, 171, 255), Vector2.zero, Vector2.one);
             SpriteImage(canvas.transform, "전체 도시 배경", "Backgrounds/Background_Home_Cartoon", Vector2.zero, Vector2.one, new Color(1f, 1f, 1f, .30f), false);
@@ -418,9 +458,10 @@ static Sprite circleSprite;
             homeBackgroundImage = SpriteImage(street.transform, "성장 배경", "Backgrounds/Background_Home_Cartoon", new Vector2(.012f, .025f), new Vector2(.988f, .975f), Color.white, false);
             var zoneBadge = SoftPanelBox(street.transform, "지역 배지", new Vector2(.035f, .84f), new Vector2(.30f, .965f));
             streetZoneBadge = zoneBadge;
-            Label(zoneBadge.transform, "거리 구걸", 19, new Color32(255, 248, 231, 255), TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, FontStyle.Bold);
-            clickText = Label(street.transform, "", 17, new Color32(255, 248, 231, 255), TextAnchor.UpperRight, new Vector2(.57f, .76f), new Vector2(.94f, .95f), FontStyle.Bold);
-            var clickOutline = clickText.gameObject.AddComponent<Outline>(); clickOutline.effectColor = new Color32(51, 44, 36, 72); clickOutline.effectDistance = new Vector2(.65f, -.65f);
+            var zoneText = Label(zoneBadge.transform, "거리 구걸", 19, Color.white, TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, FontStyle.Bold);
+            var zoneOutline = zoneText.gameObject.AddComponent<Outline>(); zoneOutline.effectColor = new Color32(35, 24, 18, 255); zoneOutline.effectDistance = new Vector2(1.4f, -1.4f);
+            clickText = Label(street.transform, "", 17, Color.white, TextAnchor.UpperRight, new Vector2(.54f, .74f), new Vector2(.95f, .95f), FontStyle.Normal);
+            var clickOutline = clickText.gameObject.AddComponent<Outline>(); clickOutline.effectColor = new Color32(35, 24, 18, 255); clickOutline.effectDistance = new Vector2(1.5f, -1.5f);
             beggarImage = SpriteImage(street.transform, "거지 성장", "Beggar/Beggar_Stage_01_Cartoon", new Vector2(.20f, .12f), new Vector2(.80f, .88f));
             beggarImage.gameObject.AddComponent<UIFloatMotion>().Configure(0, 9, 2.2f, .018f, 0f);
             beggarImage.raycastTarget = true;
@@ -433,15 +474,19 @@ static Sprite circleSprite;
                 var coin = SpriteImage(street.transform, "Coin FX " + i, "Icons/Icon_Coin", new Vector2(.45f, .20f), new Vector2(.55f, .30f));
                 coinEffects[i] = coin.gameObject.AddComponent<CoinPopEffect>(); coin.gameObject.SetActive(false);
             }
-            streetClickHint = Label(street.transform, "거지를 눌러 구걸", 16, Gold, TextAnchor.MiddleCenter, new Vector2(.31f, .025f), new Vector2(.69f, .12f), FontStyle.Bold).gameObject;
+            var hintText = Label(street.transform, "거지를 눌러 구걸", 16, Color.white, TextAnchor.MiddleCenter, new Vector2(.27f, .025f), new Vector2(.73f, .12f), FontStyle.Bold);
+            var hintOutline = hintText.gameObject.AddComponent<Outline>(); hintOutline.effectColor = new Color32(35, 24, 18, 255); hintOutline.effectDistance = new Vector2(1.5f, -1.5f);
+            streetClickHint = hintText.gameObject;
 
             // Bottom-sheet content area: risky fish and stable estate remain intact as separate tabs.
             fishHomePanel = CreamPanelBox(content, "개복치 탭", new Vector2(.055f, .115f), new Vector2(.945f, .455f));
-            Label(fishHomePanel.transform, "개복치 강화 · 고위험 투자", 25, Cream, TextAnchor.MiddleLeft, new Vector2(.05f, .84f), new Vector2(.77f, .97f), FontStyle.Bold);
+            Label(fishHomePanel.transform, "개복치 강화", 23, Cream, TextAnchor.MiddleLeft, new Vector2(.05f, .84f), new Vector2(.62f, .97f), FontStyle.Bold);
+            Button(fishHomePanel.transform, "전투 보상 i", new Vector2(.64f, .85f), new Vector2(.94f, .96f), Gold, Navy, ShowNextBattleReward);
+            Button(fishHomePanel.transform, "도감", new Vector2(.05f, .68f), new Vector2(.22f, .82f), Mint, Navy, ShowFishCollection);
             fishImage = MakeFishSprite(fishHomePanel.transform, new Vector2(.235f, .56f), new Vector2(.42f, .58f));
             fishImage.gameObject.AddComponent<UIFloatMotion>().Configure(10, 7, 1.8f, .025f, 1.1f);
-            fishText = Label(fishHomePanel.transform, "", 20, Cream, TextAnchor.MiddleLeft, new Vector2(.46f, .61f), new Vector2(.94f, .81f), FontStyle.Bold);
-            fishRiskText = Label(fishHomePanel.transform, "", 18, Cream, TextAnchor.MiddleLeft, new Vector2(.46f, .43f), new Vector2(.94f, .62f));
+            fishText = Label(fishHomePanel.transform, "", 18, Cream, TextAnchor.MiddleLeft, new Vector2(.46f, .61f), new Vector2(.94f, .81f), FontStyle.Bold);
+            fishRiskText = Label(fishHomePanel.transform, "", 16, Cream, TextAnchor.MiddleLeft, new Vector2(.46f, .43f), new Vector2(.94f, .62f), FontStyle.Normal);
             fishRiskBar = RoundedBox(fishHomePanel.transform, "강화 위험도 배경", new Color32(11, 20, 34, 230), new Vector2(.47f, .39f), new Vector2(.93f, .425f), true);
             fishRiskFill = Box(fishRiskBar.transform, "강화 위험도", Coral, Vector2.zero, Vector2.one).GetComponent<Image>();
             fishActionButton = Button(fishHomePanel.transform, "", new Vector2(.18f, .13f), new Vector2(.82f, .31f), new Color32(233, 201, 154, 255), new Color32(51, 44, 36, 255), UpgradeFish);
@@ -450,10 +495,17 @@ static Sprite circleSprite;
             Label(fishHomePanel.transform, "실패 시 개복치와 투자금이 사라집니다", 14, new Color32(255, 161, 154, 255), TextAnchor.MiddleCenter, new Vector2(.05f, .015f), new Vector2(.95f, .10f));
 
             estateHomePanel = CreamPanelBox(content, "부동산 탭", new Vector2(.055f, .115f), new Vector2(.945f, .825f));
-            Label(estateHomePanel.transform, "나의 부동산", 21, new Color32(51, 44, 36, 255), TextAnchor.MiddleLeft, new Vector2(.055f, .90f), new Vector2(.55f, .98f), FontStyle.Bold);
-            estateSummary = Label(estateHomePanel.transform, "", 16, new Color32(0, 92, 67, 255), TextAnchor.MiddleRight, new Vector2(.38f, .89f), new Vector2(.945f, .99f), FontStyle.Bold);
-            estateMapImage = SpriteImage(estateHomePanel.transform, "3x2 도시 블록", "EstateMap/EstateMap_Base_3x2", new Vector2(.025f, .08f), new Vector2(.975f, .90f), Color.white, true);
+            Label(estateHomePanel.transform, "부동산 지도", 20, new Color32(51, 44, 36, 255), TextAnchor.MiddleLeft, new Vector2(.04f, .91f), new Vector2(.34f, .985f), FontStyle.Bold);
+            estateSummary = Label(estateHomePanel.transform, "", 14, new Color32(0, 92, 67, 255), TextAnchor.MiddleRight, new Vector2(.34f, .91f), new Vector2(.96f, .985f), FontStyle.Normal);
+            estateMapImage = SpriteImage(estateHomePanel.transform, "3x2 도시 블록", "EstateMap/EstateMap_Base_3x2", new Vector2(.025f, .19f), new Vector2(.975f, .81f), Color.white, true);
             estateMapImage.transform.SetAsFirstSibling();
+            for (int i = 0; i < GameData.LocationNames.Length; i++)
+            {
+                int location = i;
+                float left = .04f + i * .32f;
+                var locationButton = Button(estateHomePanel.transform, GameData.LocationNames[i] + " ×" + GameData.LocationIncomeMultipliers[i].ToString("0.00"), new Vector2(left, .82f), new Vector2(left + .28f, .89f), Mint, Navy, delegate { MoveLocation(location); });
+                locationButton.GetComponentInChildren<ResponsiveTypography>().Configure(12, TypographyRole.Caption);
+            }
             for (int i = 0; i < 6; i++)
             {
                 int index = i;
@@ -464,21 +516,23 @@ static Sprite circleSprite;
                 var card = RoundedBox(estateHomePanel.transform, "부동산 타일 " + i, new Color32(255, 248, 231, 255), new Vector2(left, top - .31f), new Vector2(left + .28f, top), true);
                 var cardOutline = card.AddComponent<Outline>(); cardOutline.effectColor = new Color32(51, 44, 36, 255); cardOutline.effectDistance = new Vector2(1.2f, -1.2f);
                 estateCardGroups[i] = card.AddComponent<CanvasGroup>();
-                SpriteImage(card.transform, "건물 아이콘", "Estate/" + EstateArt[i], new Vector2(.03f, .11f), new Vector2(.34f, .89f));
-                RoundedBox(card.transform, "가격 정보 배경", new Color(1f, .97f, .88f, .97f), new Vector2(.32f, .04f), new Vector2(.98f, .96f));
-                estateTexts[i] = Label(card.transform, "", 15, new Color32(51, 44, 36, 255), TextAnchor.MiddleLeft, new Vector2(.35f, .05f), new Vector2(.97f, .95f), FontStyle.Bold);
-                estateBuyTexts[i] = Label(card.transform, "", 16, Gold, TextAnchor.UpperRight, new Vector2(.70f, .70f), new Vector2(.96f, .96f), FontStyle.Bold);
+                SpriteImage(card.transform, "건물 아이콘", "Estate/" + EstateArt[i], new Vector2(.08f, .08f), new Vector2(.92f, .88f));
+                estateTexts[i] = Label(card.transform, "", 15, Cream, TextAnchor.MiddleCenter, new Vector2(.56f, .68f), new Vector2(.98f, .98f), FontStyle.Bold);
+                estateBuyTexts[i] = Label(card.transform, "", 12, Cream, TextAnchor.MiddleCenter, new Vector2(.03f, .00f), new Vector2(.97f, .22f), FontStyle.Normal);
                 estateButtons[i] = card.AddComponent<Button>();
                 estateButtons[i].targetGraphic = card.GetComponent<Image>();
                 estateButtons[i].transition = Selectable.Transition.None;
-                estateButtons[i].onClick.AddListener(delegate { BuyEstate(index); });
+                estateButtons[i].onClick.AddListener(delegate { SelectEstate(index); });
             }
+            var detail = RoundedBox(estateHomePanel.transform, "선택 부동산 상세", new Color(1f, .97f, .88f, .98f), new Vector2(.025f, .02f), new Vector2(.975f, .175f), true);
+            estateDetailText = Label(detail.transform, "", 14, Cream, TextAnchor.MiddleLeft, new Vector2(.04f, .08f), new Vector2(.72f, .92f), FontStyle.Normal);
+            estateDetailButton = Button(detail.transform, "구매", new Vector2(.75f, .18f), new Vector2(.97f, .82f), Gold, Navy, delegate { BuyEstate(selectedEstate); });
 
             var nav = CreamPanelBox(content, "하단 메뉴", new Vector2(0, 0), new Vector2(1, .105f));
             fishNavButton = IconNavButton(nav.transform, "Icons/Icon_Sunfish", "개복치", new Vector2(.01f, .04f), new Vector2(.325f, .96f), new Color32(255, 190, 24, 255), delegate { ShowHomePanel(true); });
             estateNavButton = IconNavButton(nav.transform, "Icons/Icon_Estate", "부동산", new Vector2(.342f, .04f), new Vector2(.658f, .96f), new Color32(244, 232, 203, 255), delegate { ShowHomePanel(false); });
             IconNavButton(nav.transform, "Icons/Icon_Dealer", "전투", new Vector2(.675f, .04f), new Vector2(.99f, .96f), new Color32(244, 232, 203, 255), LoadBattleScene);
-            noticeText = Label(content, "", 16, new Color32(51, 44, 36, 255), TextAnchor.MiddleCenter, new Vector2(.04f, .455f), new Vector2(.96f, .475f), FontStyle.Bold);
+            noticeText = Label(content, "", 15, new Color32(51, 44, 36, 255), TextAnchor.MiddleCenter, new Vector2(.04f, .455f), new Vector2(.96f, .475f), FontStyle.Normal);
 
             ShowHomePanel(true);
             RefreshEconomyText();
@@ -493,10 +547,11 @@ static Sprite circleSprite;
             if (estateHomePanel != null) estateHomePanel.SetActive(!showFish);
             if (!showFish && estateHomePanel != null)
             {
-                var rect = estateHomePanel.GetComponent<RectTransform>(); rect.anchorMin = new Vector2(.055f, .115f); rect.anchorMax = new Vector2(.945f, .455f);
+                var rect = estateHomePanel.GetComponent<RectTransform>(); rect.anchorMin = new Vector2(.055f, .115f); rect.anchorMax = new Vector2(.945f, .825f);
             }
-            if (estateMapImage != null) estateMapImage.gameObject.SetActive(false);
-            LayoutEstateCards(true);
+            if (streetPanel != null) streetPanel.SetActive(showFish);
+            if (estateMapImage != null) estateMapImage.gameObject.SetActive(!showFish);
+            LayoutEstateCards(showFish);
             SetHomeNav(showFish ? fishNavButton : estateNavButton);
             if (streetFishImage != null) streetFishImage.gameObject.SetActive(false);
             if (streetZoneBadge != null) streetZoneBadge.SetActive(true);
@@ -557,13 +612,60 @@ static Sprite circleSprite;
                 int columns = compactHome ? 2 : 3;
                 int row = i / columns;
                 int column = i % columns;
-                float left = compactHome ? .055f + column * .46f : .045f + column * .315f;
-                float top = compactHome ? .80f - row * .26f : .83f - row * .37f;
-                float width = compactHome ? .42f : .28f;
-                float height = compactHome ? .22f : .31f;
+                float left = compactHome ? .055f + column * .46f : .075f + column * .30f;
+                float top = compactHome ? .80f - row * .26f : .75f - row * .28f;
+                float width = compactHome ? .42f : .22f;
+                float height = compactHome ? .22f : .22f;
                 var rect = estateCardGroups[i].GetComponent<RectTransform>();
                 rect.anchorMin = new Vector2(left, top - height); rect.anchorMax = new Vector2(left + width, top);
             }
+        }
+
+        void SelectEstate(int index)
+        {
+            selectedEstate = Mathf.Clamp(index, 0, GameData.Estates.Length - 1);
+            RefreshEconomyText();
+        }
+
+        void MoveLocation(int location)
+        {
+            GameData.CurrentLocation = Mathf.Clamp(location, 0, GameData.LocationNames.Length - 1);
+            GameData.Save();
+            noticeText.text = GameData.LocationNames[GameData.CurrentLocation] + "로 이동! 부동산 수익 ×" + GameData.LocationIncomeMultipliers[GameData.CurrentLocation].ToString("0.00");
+            RefreshEconomyText();
+        }
+
+        IEnumerator PlayExtortion()
+        {
+            extortionPlaying = true;
+            var overlay = new GameObject("동네 양아치 이벤트", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(CanvasGroup), typeof(GraphicRaycaster));
+            overlay.transform.SetParent(transform, false);
+            var eventCanvas = overlay.GetComponent<Canvas>(); eventCanvas.renderMode = RenderMode.ScreenSpaceOverlay; eventCanvas.sortingOrder = 190;
+            var scaler = overlay.GetComponent<CanvasScaler>(); scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize; scaler.referenceResolution = new Vector2(540, 1170); scaler.matchWidthOrHeight = .5f;
+            var shade = Box(overlay.transform, "긴장 효과", new Color(0f, 0f, 0f, .22f), Vector2.zero, Vector2.one);
+            var punk = SpriteImage(shade.transform, "임시 동네 양아치", "Bosses/Boss_01_Final", new Vector2(.32f, .34f), new Vector2(.68f, .72f));
+            var punkRect = punk.rectTransform;
+            var message = Label(shade.transform, "동네 양아치가 나타났다!", 28, Gold, TextAnchor.MiddleCenter, new Vector2(.06f, .72f), new Vector2(.94f, .84f), FontStyle.Bold);
+            Vector2 start = new Vector2(620f, 0f); Vector2 center = Vector2.zero; Vector2 end = new Vector2(-620f, 0f);
+            float elapsed = 0f;
+            while (elapsed < .7f && punk != null) { elapsed += Time.unscaledDeltaTime; punkRect.anchoredPosition = Vector2.Lerp(start, center, Mathf.SmoothStep(0f, 1f, elapsed / .7f)); yield return null; }
+
+            double stolen = Math.Max(10d, Math.Round(GameData.Money * .08d));
+            stolen = Math.Min(stolen, GameData.Money);
+            GameData.Money -= stolen;
+            GameData.Save();
+            message.text = "삥 뜯김  -" + stolen.ToString("N0") + "원";
+            message.color = Coral;
+            GameAudio.PlayFailure();
+            if (beggarImage != null) { EnsureReactionSprites(BeggarLifestyleLevel()); if (reactionSprites != null && reactionSprites.Length > 1) beggarImage.sprite = reactionSprites[1]; }
+            yield return new WaitForSecondsRealtime(.65f);
+
+            elapsed = 0f;
+            while (elapsed < .7f && punk != null) { elapsed += Time.unscaledDeltaTime; punkRect.anchoredPosition = Vector2.Lerp(center, end, Mathf.SmoothStep(0f, 1f, elapsed / .7f)); yield return null; }
+            if (overlay != null) Destroy(overlay);
+            extortionPlaying = false;
+            nextExtortionAt = Time.unscaledTime + UnityEngine.Random.Range(45f, 80f);
+            RefreshEconomyText();
         }
 
         void LoadBattleScene()
@@ -635,7 +737,35 @@ void PlayCoinBurst(Vector2 origin, bool jackpot)
 
         static double IncomeReference() { return Math.Max(BalanceDatabase.Current.begIncomePerLifestyleLevel, GameData.PassiveIncome); }
         static double BegIncome() { return IncomeReference(); }
-        static double FishPurchaseCost() { return Math.Round(BalanceDatabase.Current.fishPurchaseCost * GameData.FishEconomyScale * (1d - GameData.FishPurchaseDiscount)); }
+        static double FishPurchaseCost() { return GameData.FishPurchaseCost; }
+
+        void ShowNextBattleReward()
+        {
+            int stage = Mathf.Clamp(GameData.ClearedStage + 1, 1, GameData.MaxBattleStage);
+            ShowSimplePopup("STAGE " + stage + " 완료 혜택", BattleController.RewardPreview(stage));
+        }
+
+        void ShowFishCollection()
+        {
+            var lines = new List<string>();
+            for (int i = 0; i < GameData.FishDeathCauses.Length; i++)
+                lines.Add((GameData.FishDeathCollection & (1 << i)) != 0 ? "✓ " + GameData.FishDeathCauses[i] : "? 미발견 원인");
+            ShowSimplePopup("개복치 사망 도감", string.Join("\n", lines.ToArray()));
+        }
+
+        void ShowSimplePopup(string title, string body)
+        {
+            var popup = new GameObject(title, typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(CanvasGroup), typeof(GraphicRaycaster));
+            popup.transform.SetParent(transform, false);
+            var popupCanvas = popup.GetComponent<Canvas>(); popupCanvas.renderMode = RenderMode.ScreenSpaceOverlay; popupCanvas.sortingOrder = 210;
+            var scaler = popup.GetComponent<CanvasScaler>(); scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize; scaler.referenceResolution = new Vector2(540, 1170); scaler.matchWidthOrHeight = .5f;
+            var dim = Box(popup.transform, "터치하여 닫기", new Color(0f, 0f, 0f, .52f), Vector2.zero, Vector2.one);
+            var dismiss = dim.AddComponent<Button>(); dismiss.targetGraphic = dim.GetComponent<Image>(); dismiss.transition = Selectable.Transition.None; dismiss.onClick.AddListener(delegate { Destroy(popup); });
+            var panel = CreamPanelBox(popup.transform, title, new Vector2(.08f, .27f), new Vector2(.92f, .73f)); panel.GetComponent<Image>().raycastTarget = false;
+            Label(panel.transform, title, 26, Coral, TextAnchor.MiddleCenter, new Vector2(.06f, .80f), new Vector2(.94f, .95f), FontStyle.Bold);
+            Label(panel.transform, body, 17, Cream, TextAnchor.MiddleCenter, new Vector2(.06f, .13f), new Vector2(.94f, .80f), FontStyle.Normal);
+            Label(panel.transform, "화면을 눌러 닫기", 13, new Color32(112, 82, 38, 255), TextAnchor.MiddleCenter, new Vector2(.06f, .02f), new Vector2(.94f, .12f));
+        }
 
         void RequestDataReset()
         {
@@ -670,12 +800,12 @@ void UpgradeFish()
                 {
                     float bonusBefore = GameData.FishSurvivalBonus;
                     GameData.FishDeaths++;
+                    string deathCause = GameData.RegisterFishDeathCause();
                     float bonusAfter = GameData.FishSurvivalBonus;
                     GameData.FishLevel = 0;
-                    noticeText.text = "강화 실패! 개복치가 폐사했습니다. · 누적 사망 " + GameData.FishDeaths + "회";
+                    noticeText.text = "강화 실패! " + deathCause + " · 누적 사망 " + GameData.FishDeaths + "회";
                     GameAudio.PlayFailure();
-                    if (bonusAfter > bonusBefore + .0000001f)
-                        ShowFishSurvivalPopup(bonusAfter - bonusBefore, bonusAfter);
+                    ShowFishSurvivalPopup(deathCause, bonusAfter - bonusBefore, bonusAfter);
                 }
                 else
                 {
@@ -688,7 +818,7 @@ void UpgradeFish()
             RefreshEconomyText();
         }
 
-void ShowFishSurvivalPopup(float gainedBonus, float totalBonus)
+void ShowFishSurvivalPopup(string deathCause, float gainedBonus, float totalBonus)
         {
             var popup = new GameObject("개복치 생존 보너스 팝업", typeof(RectTransform), typeof(Canvas), typeof(CanvasScaler), typeof(CanvasGroup), typeof(GraphicRaycaster));
             popup.transform.SetParent(transform, false);
@@ -714,8 +844,8 @@ void ShowFishSurvivalPopup(float gainedBonus, float totalBonus)
 
             var panel = CreamPanelBox(popup.transform, "생존 보너스 카드", new Vector2(.10f, .37f), new Vector2(.90f, .63f));
             panel.GetComponent<Image>().raycastTarget = false;
-            Label(panel.transform, "생존 본능 성장!", 28, Coral, TextAnchor.MiddleCenter, new Vector2(.08f, .62f), new Vector2(.92f, .90f), FontStyle.Bold);
-            string body = "개복치 사망 " + GameData.FishDeaths + "회\n생존 확률 +" + (gainedBonus * 100f).ToString("0.###") + "%p\n누적 보너스 +" + (totalBonus * 100f).ToString("0.###") + "%p";
+            Label(panel.transform, "개복치 사망 원인 발견!", 25, Coral, TextAnchor.MiddleCenter, new Vector2(.08f, .62f), new Vector2(.92f, .90f), FontStyle.Bold);
+            string body = deathCause + "\n누적 사망 " + GameData.FishDeaths + "회\n생존 보정 +" + (gainedBonus * 100f).ToString("0.###") + "%p · 누적 +" + (totalBonus * 100f).ToString("0.###") + "%p";
             Label(panel.transform, body, 19, Cream, TextAnchor.MiddleCenter, new Vector2(.08f, .20f), new Vector2(.92f, .64f), FontStyle.Normal);
             Label(panel.transform, "화면을 눌러 닫기", 14, new Color32(112, 82, 38, 255), TextAnchor.MiddleCenter, new Vector2(.08f, .05f), new Vector2(.92f, .20f), FontStyle.Normal);
         }
@@ -805,23 +935,24 @@ void ShowFishSurvivalPopup(float gainedBonus, float totalBonus)
             for (int i = 0; i < GameData.Estates.Length; i++)
             {
                 total += GameData.Estates[i];
-                double cost = GameData.EstatePurchaseCost(i);
                 bool owned = GameData.Estates[i] > 0;
                 int limit = GameData.EstatePurchaseLimit(i);
-                bool limitReached = GameData.Estates[i] >= limit;
-                int nextUnlockStage = GameData.EstateNextLimitUnlockStage(i);
-                string purchaseLine = limitReached
-                    ? (nextUnlockStage > 0 ? nextUnlockStage + "스테이지 클리어 시 +1채" : "최종 보유 한도")
-                    : cost.ToString("N0") + "원";
-
-                double effectiveIncome = GameData.EstateIncome[i] * GameData.PassiveIncomeMultiplier;
-                estateTexts[i].text = GameData.EstateNames[i] + "\n보유 " + GameData.Estates[i] + "/" + limit + "채\n" + purchaseLine + "\n<color=#006B4D>+" + effectiveIncome.ToString("N0") + "/초</color>";
-                estateTexts[i].supportRichText = true;
-                estateBuyTexts[i].text = limitReached ? "MAX" : GameData.Estates[i] + "/" + limit;
-                estateButtons[i].interactable = GameData.Estates[i] < limit;
-                if (estateCardGroups[i] != null) estateCardGroups[i].alpha = homeSummary ? 1f : owned ? 1f : .48f;
+                estateTexts[i].text = GameData.Estates[i] + "채";
+                estateBuyTexts[i].text = i == selectedEstate ? "선택됨" : owned ? "보유" : "미구매";
+                estateButtons[i].interactable = true;
+                if (estateCardGroups[i] != null) estateCardGroups[i].alpha = i == selectedEstate ? 1f : homeSummary ? (owned ? .88f : .32f) : owned ? 1f : .48f;
             }
-            estateSummary.text = "보유 " + total + "채 · 부동산 수익 +" + GameData.PassiveIncome.ToString("N0") + "원/초";
+            estateSummary.text = GameData.LocationNames[GameData.CurrentLocation] + " · " + total + "채 · +" + GameData.PassiveIncome.ToString("N0") + "원/초";
+            if (estateDetailText != null)
+            {
+                int index = Mathf.Clamp(selectedEstate, 0, GameData.Estates.Length - 1);
+                int limit = GameData.EstatePurchaseLimit(index);
+                bool maxed = GameData.Estates[index] >= limit;
+                double income = GameData.EstateIncome[index] * GameData.PassiveIncomeMultiplier * GameData.LocationIncomeMultipliers[GameData.CurrentLocation];
+                estateDetailText.text = GameData.EstateNames[index] + " · 보유 " + GameData.Estates[index] + "/" + limit + "채\n+" + income.ToString("N0") + "원/초 · " + (maxed ? "현재 구매 한도" : "다음 " + GameData.EstatePurchaseCost(index).ToString("N0") + "원");
+                estateDetailButton.interactable = !maxed;
+                estateDetailButton.GetComponentInChildren<Text>().text = maxed ? "MAX" : "구매";
+            }
             if (noticeText != null && string.IsNullOrEmpty(noticeText.text))
             {
                 int next = -1;
@@ -1226,7 +1357,7 @@ public static void ClearSessionState()
         readonly Button[] offerHireButtons = new Button[3];
 readonly Text[] offerHireTexts = new Text[3];
         readonly Image[] partyImages = new Image[3];
-        Text money, stage, bossName, bossHpText, status, synergy, rerollText, rerollButtonText;
+        Text money, stage, bossName, bossHpText, status, synergy, rewardPreview, rerollText, rerollButtonText;
         Image bossHp, bossImage, battleEffect;
         Button startButton;
         Text startButtonText;
@@ -1303,7 +1434,7 @@ void EndBattleSession(bool failed)
 void BuildRecruit()
         {
             BeggarEstatePrototype.Label(battleRoot, "영웅 고용", 19, Cream, TextAnchor.MiddleLeft, new Vector2(.055f, .525f), new Vector2(.37f, .57f), FontStyle.Bold);
-            rerollText = BeggarEstatePrototype.Label(battleRoot, "", 14, new Color32(112, 82, 38, 255), TextAnchor.MiddleRight, new Vector2(.42f, .527f), new Vector2(.69f, .568f), FontStyle.Bold);
+            rerollText = BeggarEstatePrototype.Label(battleRoot, "", 14, new Color32(112, 82, 38, 255), TextAnchor.MiddleRight, new Vector2(.42f, .527f), new Vector2(.69f, .568f), FontStyle.Normal);
             var rerollButton = BeggarEstatePrototype.Button(battleRoot, "리롤", new Vector2(.715f, .525f), new Vector2(.945f, .57f), new Color32(233, 201, 154, 255), Cream, delegate { RollOffers(true); });
             rerollButton.GetComponentInChildren<ResponsiveTypography>().Configure(14, TypographyRole.Button);
             rerollButtonText = rerollButton.GetComponentInChildren<Text>();
@@ -1330,13 +1461,16 @@ offerHireTexts[i] = hireButton.GetComponentInChildren<Text>();
             var arenaBackground = BeggarEstatePrototype.SpriteImage(battleRoot, "관객석 원형 경기장", "Backgrounds/Background_BattleArena_Audience_V2", new Vector2(.045f, .57f), new Vector2(.955f, .875f), Color.white, false);
             var arenaOutline = arenaBackground.gameObject.AddComponent<Outline>(); arenaOutline.effectColor = new Color32(51, 44, 36, 255); arenaOutline.effectDistance = new Vector2(1.5f, -1.5f);
             arenaBackground.transform.SetAsFirstSibling();
-            bossName = BeggarEstatePrototype.Label(battleRoot, "", 23, Cream, TextAnchor.MiddleCenter, new Vector2(.17f, .925f), new Vector2(.83f, .985f), FontStyle.Bold);
+            bossName = BeggarEstatePrototype.Label(battleRoot, "", 23, Cream, TextAnchor.MiddleCenter, new Vector2(.17f, .94f), new Vector2(.83f, .985f), FontStyle.Bold);
             BeggarEstatePrototype.Button(battleRoot, "◀", new Vector2(.045f, .932f), new Vector2(.145f, .982f), Panel, Cream, delegate { if (!fighting) selectedStage = Mathf.Max(1, selectedStage - 1); Refresh(); });
             BeggarEstatePrototype.Button(battleRoot, "▶", new Vector2(.855f, .932f), new Vector2(.955f, .982f), Panel, Cream, delegate { if (!fighting) selectedStage = Mathf.Min(Mathf.Min(GameData.HighestStage, GameData.MaxBattleStage), selectedStage + 1); Refresh(); });
-            var hpBg = BeggarEstatePrototype.RoundedBox(battleRoot, "Boss HP BG", new Color32(80, 50, 45, 255), new Vector2(.12f, .877f), new Vector2(.88f, .918f), true);
+            var rewardBg = BeggarEstatePrototype.RoundedBox(battleRoot, "완료 보상 강조 배경", new Color32(24, 76, 68, 245), new Vector2(.16f, .892f), new Vector2(.84f, .938f), true);
+            rewardPreview = BeggarEstatePrototype.Label(rewardBg.transform, "", 14, Color.white, TextAnchor.MiddleCenter, new Vector2(.03f, .04f), new Vector2(.97f, .96f), FontStyle.Normal);
+            var rewardOutline = rewardPreview.gameObject.AddComponent<Outline>(); rewardOutline.effectColor = new Color32(0, 0, 0, 180); rewardOutline.effectDistance = new Vector2(.8f, -.8f);
+            var hpBg = BeggarEstatePrototype.RoundedBox(battleRoot, "Boss HP BG", new Color32(80, 50, 45, 255), new Vector2(.12f, .845f), new Vector2(.88f, .885f), true);
             bossHp = BeggarEstatePrototype.Box(hpBg.transform, "Boss HP", Coral, Vector2.zero, Vector2.one).GetComponent<Image>();
-            bossHpText = BeggarEstatePrototype.Label(hpBg.transform, "", 14, new Color32(255, 248, 231, 255), TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, FontStyle.Bold);
-            bossImage = BeggarEstatePrototype.SpriteImage(battleRoot, "Boss Art", "Bosses/Boss_01_Final", new Vector2(.25f, .59f), new Vector2(.75f, .86f));
+            bossHpText = BeggarEstatePrototype.Label(hpBg.transform, "", 13, new Color32(255, 248, 231, 255), TextAnchor.MiddleCenter, Vector2.zero, Vector2.one, FontStyle.Normal);
+            bossImage = BeggarEstatePrototype.SpriteImage(battleRoot, "Boss Art", "Bosses/Boss_01_Final", new Vector2(.25f, .57f), new Vector2(.75f, .835f));
             bossImage.gameObject.AddComponent<UIFloatMotion>().Configure(0, 8, 1.35f, .035f, .5f);
 
             BeggarEstatePrototype.Label(battleRoot, "현재 파티", 17, Cream, TextAnchor.MiddleLeft, new Vector2(.055f, .25f), new Vector2(.42f, .28f), FontStyle.Bold);
@@ -1345,7 +1479,7 @@ offerHireTexts[i] = hireButton.GetComponentInChildren<Text>();
                 float top = .248f - i * .031f;
                 var unit = BeggarEstatePrototype.Box(battleRoot, "Party Row " + i, Color.clear, new Vector2(.055f, top - .028f), new Vector2(.945f, top));
                 partyImages[i] = BeggarEstatePrototype.SpriteImage(unit.transform, "Party Art " + i, "Icons/Icon_" + (i == 0 ? "Tank" : i == 1 ? "Dealer" : "Healer"), new Vector2(.00f, .02f), new Vector2(.07f, .98f));
-                partyTexts.Add(BeggarEstatePrototype.Label(unit.transform, "", 14, Cream, TextAnchor.MiddleLeft, new Vector2(.07f, .00f), new Vector2(.45f, 1f), FontStyle.Bold));
+                partyTexts.Add(BeggarEstatePrototype.Label(unit.transform, "", 14, Cream, TextAnchor.MiddleLeft, new Vector2(.07f, .00f), new Vector2(.45f, 1f), FontStyle.Normal));
                 var heroHpBg = BeggarEstatePrototype.RoundedBox(unit.transform, "HP BG", new Color32(80, 50, 45, 255), new Vector2(.48f, .32f), new Vector2(.96f, .68f), true);
                 partyHp.Add(BeggarEstatePrototype.Box(heroHpBg.transform, "HP Fill", i == 0 ? Blue : Mint, Vector2.zero, Vector2.one).GetComponent<Image>());
                 partyHpTexts.Add(BeggarEstatePrototype.Label(unit.transform, "", 11, Cream, TextAnchor.MiddleCenter, new Vector2(.48f, .00f), new Vector2(.96f, 1f), FontStyle.Bold));
@@ -1353,8 +1487,8 @@ offerHireTexts[i] = hireButton.GetComponentInChildren<Text>();
             bossImage.transform.SetAsLastSibling();
             battleEffect = BeggarEstatePrototype.SpriteImage(battleRoot, "Battle Effect", "Effects/Effect_NeutralImpact", new Vector2(.25f, .59f), new Vector2(.75f, .88f));
             battleEffect.gameObject.SetActive(false);
-            synergy = BeggarEstatePrototype.Label(battleRoot, "", 14, new Color32(24, 133, 99, 255), TextAnchor.MiddleCenter, new Vector2(.055f, .13f), new Vector2(.945f, .158f), FontStyle.Bold);
-            status = BeggarEstatePrototype.Label(battleRoot, "", 15, Cream, TextAnchor.MiddleCenter, new Vector2(.055f, .083f), new Vector2(.945f, .13f), FontStyle.Bold);
+            synergy = BeggarEstatePrototype.Label(battleRoot, "", 14, new Color32(24, 133, 99, 255), TextAnchor.MiddleCenter, new Vector2(.055f, .13f), new Vector2(.945f, .158f), FontStyle.Normal);
+            status = BeggarEstatePrototype.Label(battleRoot, "", 15, Cream, TextAnchor.MiddleCenter, new Vector2(.055f, .083f), new Vector2(.945f, .13f), FontStyle.Normal);
             startButton = BeggarEstatePrototype.Button(battleRoot, "자동 전투 시작", new Vector2(.18f, .015f), new Vector2(.82f, .078f), new Color32(233, 201, 154, 255), Cream, StartBattle);
             startButtonText = startButton.GetComponentInChildren<Text>();
             startButton.GetComponentInChildren<ResponsiveTypography>().Configure(18, TypographyRole.Button);
@@ -1396,7 +1530,7 @@ offerHireTexts[i] = hireButton.GetComponentInChildren<Text>();
             for (int i = 0; i < offers.Length; i++)
             {
                 var card = offerRoot.GetChild(i); var old = card.Find("Info"); if (old != null) Destroy(old.gameObject);
-                var h = offers[i]; var text = BeggarEstatePrototype.Label(card, Stars(h.stars) + "  " + Element(h.element) + "\nHP " + h.maxHp.ToString("0") + " · ATK " + h.attack.ToString("0") + (h.heal > 0 ? " · HEAL " + h.heal.ToString("0") : ""), 13, Cream, TextAnchor.MiddleCenter, new Vector2(.04f, .205f), new Vector2(.96f, .45f), FontStyle.Bold); text.gameObject.name = "Info";
+                var h = offers[i]; var text = BeggarEstatePrototype.Label(card, Stars(h.stars) + "  " + Element(h.element) + "\nHP " + h.maxHp.ToString("0") + " · ATK " + h.attack.ToString("0") + (h.heal > 0 ? " · HEAL " + h.heal.ToString("0") : ""), 13, Cream, TextAnchor.MiddleCenter, new Vector2(.04f, .205f), new Vector2(.96f, .45f), FontStyle.Normal); text.gameObject.name = "Info";
                 if (offerHireTexts[i] != null) offerHireTexts[i].text = "고용  " + h.cost.ToString("N0") + "원";
                 if (offerImages[i] != null) { offerImages[i].sprite = BeggarEstatePrototype.ArtSprite("Icons/Icon_" + (i == 0 ? "Tank" : i == 1 ? "Dealer" : "Healer")); offerImages[i].color = Color.white; }
                 SavedOffers[i] = h.Clone();
@@ -1422,7 +1556,7 @@ offerHireTexts[i] = hireButton.GetComponentInChildren<Text>();
             for (int i = 0; i < offers.Length; i++)
             {
                 var card = offerRoot.GetChild(i); var old = card.Find("Info"); if (old != null) Destroy(old.gameObject);
-                var h = offers[i]; var text = BeggarEstatePrototype.Label(card, Stars(h.stars) + "  " + Element(h.element) + "\nHP " + h.maxHp.ToString("0") + " · ATK " + h.attack.ToString("0") + (h.heal > 0 ? " · HEAL " + h.heal.ToString("0") : ""), 13, Cream, TextAnchor.MiddleCenter, new Vector2(.04f, .205f), new Vector2(.96f, .45f), FontStyle.Bold); text.gameObject.name = "Info";
+                var h = offers[i]; var text = BeggarEstatePrototype.Label(card, Stars(h.stars) + "  " + Element(h.element) + "\nHP " + h.maxHp.ToString("0") + " · ATK " + h.attack.ToString("0") + (h.heal > 0 ? " · HEAL " + h.heal.ToString("0") : ""), 13, Cream, TextAnchor.MiddleCenter, new Vector2(.04f, .205f), new Vector2(.96f, .45f), FontStyle.Normal); text.gameObject.name = "Info";
                 if (offerHireTexts[i] != null) offerHireTexts[i].text = "고용  " + h.cost.ToString("N0") + "원";
                 if (offerImages[i] != null) { offerImages[i].sprite = BeggarEstatePrototype.ArtSprite("Icons/Icon_" + (i == 0 ? "Tank" : i == 1 ? "Dealer" : "Healer")); offerImages[i].color = Color.white; }
             }
@@ -1655,6 +1789,13 @@ void ShowBattleResultPopup(bool victory, string detail)
                 default: return "";
             }
         }
+
+        public static string RewardPreview(int stageValue)
+        {
+            if (stageValue > GameData.ClearedStage)
+                return "최초 보상 " + TotalStageReward(GameData.ClearedStage + 1, stageValue).ToString("N0") + "원\n영구 특전 · " + StageReward(stageValue);
+            return "반복 격파 보상 " + RepeatReward(stageValue).ToString("N0") + "원";
+        }
         static int RepeatReward(int stageValue)
         {
             var balance = BalanceDatabase.Current;
@@ -1683,6 +1824,7 @@ void ShowBattleResultPopup(bool victory, string detail)
         void Refresh()
         {
             money.text = "보유 자금  " + GameData.Money.ToString("N0") + "원"; stage.text = "STAGE " + selectedStage + " / " + GameData.MaxBattleStage;
+            if (rewardPreview != null) rewardPreview.text = "완료 보상 · " + RewardPreview(selectedStage).Replace("\n", " / ");
             rerollText.text = "직군별 후보 3명";
             
             RefreshOfferAvailability();
